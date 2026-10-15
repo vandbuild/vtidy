@@ -1,5 +1,6 @@
 /**
  * Copyright 2023 Viacheslav Barkov
+ * Optimized for Large Image Datasets in 2026
  */
 
 package com.slavabarkov.tidy.viewmodels
@@ -43,8 +44,9 @@ class ORTImageViewModel(application: Application) : AndroidViewModel(application
         val model = resources.openRawResource(modelID).readBytes()
         val session = ortEnv.createSession(model)
 
-        viewModelScope.launch(Dispatchers.Main) {
-            progress.value = 0.0
+        // फिक्स: ऐप क्रैश से बचाने के लिए भारी काम को बैकग्राउंड थ्रेड (Dispatchers.IO) पर डाला
+        viewModelScope.launch(Dispatchers.IO) {
+            progress.postValue(0.0)
             val uri: Uri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
             val projection = arrayOf(
                 MediaStore.Images.Media._ID,
@@ -55,67 +57,81 @@ class ORTImageViewModel(application: Application) : AndroidViewModel(application
             val contentResolver: ContentResolver = getApplication<Application>().contentResolver
             val cursor: Cursor? = contentResolver.query(uri, projection, null, null, sortOrder)
             val totalImages = cursor?.count ?: 0
+            
             cursor?.use {
                 val idColumn: Int = it.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
                 val dateColumn: Int =
                     it.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_MODIFIED)
                 val bucketColumn: Int =
                     it.getColumnIndexOrThrow(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
+                
                 while (it.moveToNext()) {
                     val id: Long = it.getLong(idColumn)
                     val date: Long = it.getLong(dateColumn)
                     val bucket: String = it.getString(bucketColumn)
-                    // Don't add screenshots to image index
+                    
+                    // स्क्रीनशॉट्स को इंडेक्स न करें
                     if (bucket == "Screenshots") continue
+                    
                     val record = repository.getRecord(id) as ImageEmbedding?
                     if (record != null) {
                         idxList.add(record.id)
                         embeddingsList.add(record.embedding)
                     } else {
                         val imageUri: Uri = Uri.withAppendedPath(uri, id.toString())
-                        val inputStream = contentResolver.openInputStream(imageUri)
-                        val bytes = inputStream?.readBytes()
-                        inputStream?.close()
+                        
+                        try {
+                            // use block का उपयोग किया ताकि InputStream काम के बाद अपने आप बंद हो जाए
+                            contentResolver.openInputStream(imageUri)?.use { inputStream ->
+                                val bytes = inputStream.readBytes()
+                                
+                                // बिटमैप डिकोड करें
+                                val bitmap: Bitmap? =
+                                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                    
+                                bitmap?.let { sourceBitmap ->
+                                    val rawBitmap = centerCrop(sourceBitmap, 224)
+                                    val inputShape = longArrayOf(1, 3, 224, 224)
+                                    val inputName = "pixel_values"
+                                    val imgData = preProcess(rawBitmap)
+                                    val inputTensor = OnnxTensor.createTensor(ortEnv, imgData, inputShape)
 
-                        // Can fail to create the image decoder if its not implemented for the image type
-                        val bitmap: Bitmap? =
-                            BitmapFactory.decodeByteArray(bytes, 0, bytes?.size ?: 0)
-                        bitmap?.let {
-                            val rawBitmap = centerCrop(bitmap, 224)
-                            val inputShape = longArrayOf(1, 3, 224, 224)
-                            val inputName = "pixel_values"
-                            val imgData = preProcess(rawBitmap)
-                            val inputTensor = OnnxTensor.createTensor(ortEnv, imgData, inputShape)
-
-                            inputTensor.use {
-                                val output =
-                                    session?.run(Collections.singletonMap(inputName, inputTensor))
-                                output.use {
-                                    @Suppress("UNCHECKED_CAST") var rawOutput =
-                                        ((output?.get(0)?.value) as Array<FloatArray>)[0]
-                                    rawOutput = normalizeL2(rawOutput)
-                                    repository.addImageEmbedding(
-                                        ImageEmbedding(
-                                            id, date, rawOutput
-                                        )
-                                    )
-                                    idxList.add(id)
-                                    embeddingsList.add(rawOutput)
-
+                                    inputTensor.use {
+                                        val output =
+                                            session?.run(Collections.singletonMap(inputName, inputTensor))
+                                        output.use {
+                                            @Suppress("UNCHECKED_CAST") 
+                                            var rawOutput = ((output?.get(0)?.value) as Array<FloatArray>)[0]
+                                            rawOutput = normalizeL2(rawOutput)
+                                            repository.addImageEmbedding(
+                                                ImageEmbedding(
+                                                    id, date, rawOutput
+                                                )
+                                            )
+                                            idxList.add(id)
+                                            embeddingsList.add(rawOutput)
+                                        }
+                                    }
+                                    
+                                    // फिक्स: रैम को खाली करने के लिए बिटमैप्स को तुरंत रीसायकल (Recycle) किया
+                                    rawBitmap.recycle()
+                                    if (sourceBitmap != rawBitmap) {
+                                        sourceBitmap.recycle()
+                                    }
                                 }
                             }
+                        } catch (e: Exception) {
+                            // अगर कोई फोटो करप्ट है, तो ऐप क्रैश होने के बजाय उसे स्किप कर देगा
+                            e.printStackTrace() 
                         }
                     }
-                    // Record created/loaded, update progress
-                    progress.value = it.position.toDouble() / totalImages.toDouble()
+                    // प्रोग्रेस को सुरक्षित रूप से बैकग्राउंड थ्रेड से अपडेट करने के लिए postValue लगाया
+                    progress.postValue(it.position.toDouble() / totalImages.toDouble())
                 }
             }
             cursor?.close()
             session.close()
-            progress.setValue(1.0)
+            progress.postValue(1.0)
         }
     }
 }
-
-
-
