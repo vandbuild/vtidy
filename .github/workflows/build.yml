@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build and Release Android APK
 
 on:
   push:
@@ -9,6 +9,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # रिलीज बनाने के लिए यह परमिशन जरूरी है
 
     steps:
     - name: Checkout Code
@@ -21,17 +23,21 @@ jobs:
         distribution: 'temurin'
         cache: gradle
 
-    # फिक्स: अक्सर gradlew फाइल को रन करने की परमिशन न होने से बिल्ड फेल होता है
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
 
-    # फिक्स: पुराने प्रोजेक्ट्स में लिनक्स पर सीधे असेंबल करने की कमांड
     - name: Build with Gradle
       run: ./gradlew assembleDebug --stacktrace
 
-    - name: Upload APK Artifact
-      uses: actions/upload-artifact@v4
+    # नया फिक्स: ऐप को सीधे GitHub Release में अपलोड करना
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
       with:
-        name: Tidy-Fixed-APK
-        path: app/build/outputs/apk/debug/*.apk
-
+        tag_name: v1.0.1-fixed
+        name: "Tidy App - Fixed Gallery Crash"
+        body: "This version fixes the Android gallery indexing crash by optimization."
+        draft: false
+        prerelease: false
+        files: app/build/outputs/apk/debug/*.apk
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
