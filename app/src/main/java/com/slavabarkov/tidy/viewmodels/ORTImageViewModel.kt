@@ -1,6 +1,6 @@
 /**
  * Copyright 2023 Viacheslav Barkov
- * Optimized for Large Image Datasets in 2026 - Crash & Memory Fix Added
+ * Optimized for Large Image Datasets and Null Pointer Crash Fix
  */
 
 package com.slavabarkov.tidy.viewmodels
@@ -40,7 +40,6 @@ class ORTImageViewModel(application: Application) : AndroidViewModel(application
         repository = ImageEmbeddingRepository(imageEmbeddingDao)
     }
 
-    // भारी इमेज को बिना रैम फुल किए छोटा करके लोड करने का सुरक्षित फंक्शन
     private fun decodeSampledBitmapFromUri(contentResolver: ContentResolver, imageUri: Uri, reqWidth: Int = 224, reqHeight: Int = 224): Bitmap? {
         var inputStream: InputStream? = null
         return try {
@@ -102,9 +101,15 @@ class ORTImageViewModel(application: Application) : AndroidViewModel(application
                     processedLoopCount++
                     val id: Long = it.getLong(idColumn)
                     val date: Long = it.getLong(dateColumn)
-                    val bucket: String = it.getString(bucketColumn)
                     
-                    if (bucket == "Screenshots") continue
+                    // फिक्स: यहाँ 'it.getString' नल (null) हो सकता है, इसलिए इसे सुरक्षित बनाया
+                    val bucket: String? = try { it.getString(bucketColumn) } catch(e: Exception) { null }
+                    
+                    // अगर फोल्डर का नाम स्क्रीनशॉट है या नाम गायब (null) है, तो सुरक्षित रूप से स्किप करें
+                    if (bucket == null || bucket == "Screenshots") {
+                        progress.postValue(it.position.toDouble() / totalImages.toDouble())
+                        continue
+                    }
                     
                     val record = repository.getRecord(id) as ImageEmbedding?
                     if (record != null) {
@@ -113,9 +118,7 @@ class ORTImageViewModel(application: Application) : AndroidViewModel(application
                     } else {
                         val imageUri: Uri = Uri.withAppendedPath(uri, id.toString())
                         
-                        // ट्राई-कैच का सुरक्षा कवच जो 76% पर क्रैश होने से बचाएगा
                         try {
-                            // रैम बचाने के लिए इमेज को रीसाइज़ करके लोड किया
                             val bitmap: Bitmap? = decodeSampledBitmapFromUri(contentResolver, imageUri, 224, 224)
                                     
                             bitmap?.let { sourceBitmap ->
@@ -139,27 +142,21 @@ class ORTImageViewModel(application: Application) : AndroidViewModel(application
                                     }
                                 }
                                 
-                                // बिटमैप मेमोरी को तुरंत रीसायकल करें
                                 rawBitmap.recycle()
                                 if (sourceBitmap != rawBitmap) {
                                     sourceBitmap.recycle()
                                 }
                             }
                         } catch (oom: OutOfMemoryError) {
-                            // रैम फुल होने पर तुरंत सफाई
                             System.gc()
                             Runtime.getRuntime().gc()
-                            Log.e("TIDY_FIX", "Out of memory handled at photo #$processedLoopCount")
                         } catch (e: Exception) {
-                            // 76% पर जो भी करप्ट फोटो आ रही थी, उसे बिना ऐप बंद किए स्किप कर दिया जाएगा
-                            Log.e("TIDY_FIX", "Corrupted photo skipped at photo #$processedLoopCount")
                             e.printStackTrace() 
                         }
                     }
                     
                     progress.postValue(it.position.toDouble() / totalImages.toDouble())
 
-                    // हर 20 फोटोज़ प्रोसेस होने के बाद रैम को साफ़ करें ताकि 8000 फोटोज़ आराम से चलें
                     if (processedLoopCount % 20 == 0) {
                         System.gc()
                     }
