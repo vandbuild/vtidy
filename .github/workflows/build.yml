@@ -10,7 +10,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # रिलीज बनाने के लिए यह परमिशन जरूरी है
+      contents: write
 
     steps:
     - name: Checkout Code
@@ -29,15 +29,15 @@ jobs:
     - name: Build with Gradle
       run: ./gradlew assembleDebug --stacktrace
 
-    # नया फिक्स: ऐप को सीधे GitHub Release में अपलोड करना
+    # यह कोड आपके ऐप को सीधे Releases में डाल देगा
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: v1.0.1-fixed
-        name: "Tidy App - Fixed Gallery Crash"
-        body: "This version fixes the Android gallery indexing crash by optimization."
+        tag_name: "v1.0.${{ github.run_number }}"
+        name: "Tidy App Fixed v1.0.${{ github.run_number }}"
+        body: "This version fixes the Android 8000+ gallery indexing crash by memory optimization."
         draft: false
         prerelease: false
-        files: app/build/outputs/apk/debug/*.apk
+        files: app/build/outputs/apk/debug/app-debug.apk
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
